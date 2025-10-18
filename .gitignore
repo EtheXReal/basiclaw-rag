@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+*.log
+.env
+processed_chunks.txt
+vector_data/
