@@ -7,7 +7,13 @@ from pathlib import Path
 
 from embedding_manager import EmbeddingManager
 from metadata_store import RedisMetadataStore
-from core.pipeline import INDEX_DIR, build_pipeline, load_vector_store, query_chunks
+from core.pipeline import (
+    INDEX_DIR,
+    build_pipeline,
+    load_vector_store,
+    query_chunks,
+    generate_llm_answer,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -78,6 +84,10 @@ def main() -> None:
             if not results:
                 print("未检索到任何相关文本。")
                 return
+            answer = generate_llm_answer(args.query, results, enabled=args.use_llm)
+            print("LLM 回答：")
+            print(answer)
+            print()
             for rank, item in enumerate(results, start=1):
                 print(f"Top{rank} —— 相似度得分: {item.score:.4f}")
                 print(f"  chunk_id: {item.chunk_id} | 页码: {item.page}")
@@ -92,3 +102,6 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+    parser.add_argument("--enable-llm", dest="use_llm", action="store_true", help="启用 LLM 回答。")
+    parser.add_argument("--disable-llm", dest="use_llm", action="store_false", help="关闭 LLM 回答。")
+    parser.set_defaults(use_llm=LLM_ENABLED)

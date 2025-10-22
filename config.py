@@ -41,6 +41,10 @@ if not DASHSCOPE_API_KEY:
         "未检测到 DASHSCOPE_API_KEY 环境变量，请在运行流程前完成配置。"
     )
 
+# LLM 模型配置，默认使用达摩盘 Qwen-turbo
+LLM_MODEL = os.getenv("LLM_MODEL", "qwen-turbo")
+LLM_ENABLED = os.getenv("LLM_ENABLED", "true").lower() == "true"
+
 # 文本切分参数，可以在此统一调整分段策略
 TEXT_SPLITTER_PARAMS = {
     "separators": ["\n\n", "\n", "。", ".", " ", ""],

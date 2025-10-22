@@ -13,7 +13,9 @@ from core.pipeline import (
     build_pipeline,
     load_vector_store,
     query_chunks,
+    generate_llm_answer,
 )
+from config import LLM_ENABLED
 from embedding_manager import EmbeddingManager
 from metadata_store import RedisMetadataStore
 
@@ -52,14 +54,14 @@ def rebuild_index(limit: float | None) -> Tuple[str, str]:
         return ("构建失败", str(exc))
 
 
-def perform_query(question: str, top_k: float) -> Tuple[List[List[str]], str]:
+def perform_query(question: str, top_k: float, use_llm: bool) -> Tuple[str, List[List[str]], str]:
     if not question.strip():
-        return [], "请输入查询内容。"
+        return "请输入查询内容。", [], "请输入查询内容。"
     top_k_int = max(1, int(top_k))
     try:
         STATE.ensure_vector_store()
     except Exception as exc:  # pylint: disable=broad-except
-        return [], f"加载索引失败：{exc}"
+        return f"加载索引失败：{exc}", [], ""
 
     try:
         results: List[QueryResult] = query_chunks(
@@ -70,10 +72,12 @@ def perform_query(question: str, top_k: float) -> Tuple[List[List[str]], str]:
             top_k=top_k_int,
         )
     except Exception as exc:  # pylint: disable=broad-except
-        return [], f"检索失败：{exc}"
+        return f"检索失败：{exc}", [], ""
 
     if not results:
-        return [], "未检索到相关内容。"
+        return "未检索到相关内容。", [], ""
+
+    answer = generate_llm_answer(question, results, enabled=use_llm)
 
     table = [
         [
@@ -89,17 +93,23 @@ def perform_query(question: str, top_k: float) -> Tuple[List[List[str]], str]:
         for item in results
     ]
     detail = "\n\n---\n\n".join(detail_lines)
-    return table, detail
+    return answer, table, detail
 
 
 with gr.Blocks(title="基本法向量检索") as demo:
-    gr.Markdown("## 基本法向量检索 Demo\n支持简体提问，返回相关繁体原文片段。")
+    gr.Markdown(
+        "## 基本法学习 · 向量检索助手\n"
+        "支持简体提问，返回相关繁体原文片段。"
+    )
 
     with gr.Row():
         question = gr.Textbox(label="请输入问题", placeholder="例如：香港特首的选举流程", lines=2)
         top_k = gr.Slider(1, 10, value=3, step=1, label="返回条目数")
+        use_llm_checkbox = gr.Checkbox(label="启用 LLM 总结", value=LLM_ENABLED)
 
     query_btn = gr.Button("执行检索", variant="primary")
+
+    answer_markdown = gr.Markdown(label="LLM 回答")
 
     results_table = gr.Dataframe(
         headers=["chunk_id", "页码", "相似度(距离)", "预览"],
@@ -114,7 +124,11 @@ with gr.Blocks(title="基本法向量检索") as demo:
         rebuild_btn = gr.Button("重建索引")
         rebuild_log = gr.Textbox(label="构建日志", interactive=False)
 
-    query_btn.click(perform_query, inputs=[question, top_k], outputs=[results_table, detail_markdown])
+    query_btn.click(
+        perform_query,
+        inputs=[question, top_k, use_llm_checkbox],
+        outputs=[answer_markdown, results_table, detail_markdown],
+    )
     rebuild_btn.click(rebuild_index, inputs=[limit], outputs=[status_bar, rebuild_log])
 
 if __name__ == "__main__":

@@ -1,54 +1,85 @@
-# 基本法 PDF 向量检索
+# Basic Law Vector Search
 
-使用 Python + LangChain 搭建的本地知识检索系统：读取《香港基本法》繁体 PDF，切分为完整句子片段，经 DashScope 向量化写入 FAISS，并用 Redis 存储 `chunk_id/页码/行号/原文` 元数据。支持简体提问返回繁体原文，提供命令行与 Gradio Web UI 两种入口。
+Local RAG demo built with Python + LangChain: it parses the Traditional Chinese “Basic Law” PDF, cleans and chunks sentences (`≥100` chars), generates DashScope `text-embedding-v4` embeddings into FAISS, stores metadata (chunk id / page / line / original text) in Redis, and optionally asks Qwen-turbo to summarise results. Supports both CLI and Gradio Web UI.
 
-![Gradio 检索界面演示](assets/demo.png)
+![Gradio UI](assets/demo.png)
 
-## 主要特性
-- **繁体 PDF 清洗**：PyMuPDF 优先提取文本，句号断句并组合 ≥100 字的 chunk，同步导出 `processed_chunks.txt` 便于复查。
-- **向量检索**：DashScope `text-embedding-v4` + FAISS 查询，查询时自动做简繁转换，维持原文语境。
-- **元数据追溯**：Redis 保存页码、行号与原文，全平台可回链定位。
-- **多入口交互**：`main.py`（CLI）与 `app_gradio.py`（Web）共用 `core/pipeline.py` 的核心构建/检索流程。
+## Highlights
+- **Traditional PDF cleaning**: PyMuPDF first, then PyPDF2 fallback; exports `processed_chunks.txt` for manual audit.
+- **Sentence-level chunks**: punctuation-based splitting, removes dotted table-of-contents noise; each chunk is readable.
+- **Vector search + LLM answer**: DashScope + FAISS with simplified-to-traditional query normalisation, optional Qwen-turbo summary with cited pages.
+- **Metadata traceability**: Redis keeps page/line/content for every chunk.
+- **Reusable core**: CLI (`main.py`) and Gradio (`app_gradio.py`) share `core/pipeline.py`.
 
-## 快速上手
+## Requirements
+- Python 3.10+
+- Running Redis instance (default `localhost:6379`)
+- DashScope API key (`text-embedding-v4` & `qwen-turbo`)
+- Recommend ASCII-only path for FAISS data (e.g., `C:\faiss_data` on Windows)
+
+## Quick Start
 ```bash
 git clone https://github.com/EtheXReal/basiclaw-rag.git
 cd basiclaw-rag
-python -m venv .venv && .\.venv\Scripts\activate  # Windows
-# source .venv/bin/activate                       # macOS / Linux
+python -m venv .venv && .\.venv\Scripts\activate          # Windows
+# source .venv/bin/activate                               # macOS / Linux
 pip install -r requirements.txt
 
-# 环境变量（必须）
-setx DASHSCOPE_API_KEY "sk-xxxxxxxx"              # 或 export ...
-# 可选：纯英文向量存储目录
-setx VECTOR_DATA_DIR "C:\faiss_data"
-```
-确保本地 Redis 已启动（默认 `localhost:6379`）。
+# Required
+setx DASHSCOPE_API_KEY "sk-xxxxxxxx"                     # Windows (permanent)
+# export DASHSCOPE_API_KEY="sk-xxxxxxxx"                 # macOS / Linux
 
-### 构建索引 + 查询
+# Optional
+setx VECTOR_DATA_DIR "C:\faiss_data"
+# setx REDIS_HOST "127.0.0.1"
+# setx REDIS_PORT "6379"
+# setx LLM_MODEL "qwen-turbo"
+# setx LLM_ENABLED "true"
+```
+Ensure Redis is running before use.
+
+### Build Index & Query (CLI)
 ```bash
 python main.py --rebuild
 python main.py --query "香港特首的选举流程" --top-k 3
 ```
+CLI outputs the LLM answer (if enabled) followed by referenced chunks.
 
-### 启动 Gradio UI
+### Launch Gradio UI
 ```bash
 python app_gradio.py
-# 浏览器打开 http://127.0.0.1:7860
+# open http://127.0.0.1:7860
 ```
+UI contains a checkbox to toggle LLM summaries.
 
-## Docker 运行
+## Docker
 ```bash
 docker build -t basiclaw-vector .
-docker run -p 7860:7860 -e DASHSCOPE_API_KEY=sk-xxxxxxxx basiclaw-vector
+docker run -p 7860:7860 ^
+  -e DASHSCOPE_API_KEY=sk-xxxxxxxx ^
+  -e VECTOR_DATA_DIR=/app/data ^
+  --add-host=host.docker.internal:host-gateway ^
+  basiclaw-vector
 ```
-如需自定义向量目录，可增加 `-e VECTOR_DATA_DIR=/app/data`。
+Use `--add-host` if Redis runs on the host. Alternatively, create a `docker-compose.yml` to run Redis alongside.
 
-## 关键文件
-- `core/pipeline.py`：构建/查询主流程（提取、切分、向量化、预览生成）。
-- `text_splitter.py`：句子级清洗，导出 `processed_chunks.txt`。
-- `app_gradio.py`：Gradio 单页应用，支持检索与一键重建。
-- `main.py`：命令行入口（`--rebuild` / `--query`）。
-- `Dockerfile`：容器化部署脚本。
+## One-Click Setup
+- Windows: `setup.ps1`
+- macOS / Linux: `setup.sh`
 
-欢迎提 Issue / PR 一起完善中文 PDF 向量检索实践。*** End Patch to=functions.apply_patch json input code block*** Output: Success. Updated the following files:
+```powershell
+.\setup.ps1
+```
+```bash
+chmod +x setup.sh
+./setup.sh
+```
+
+## Key Files
+- `core/pipeline.py` – main pipeline (extract → split → embed → preview)
+- `text_splitter.py` – sentence cleaning & chunk export
+- `llm_manager.py` – Qwen-turbo wrapper
+- `main.py` / `app_gradio.py` – CLI & Gradio interfaces
+- `Dockerfile`, `.env.example`, `setup.ps1`, `setup.sh`
+
+Contributions welcome!

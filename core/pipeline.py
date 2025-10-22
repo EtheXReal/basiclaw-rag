@@ -18,6 +18,8 @@ from vector_store import build_faiss_index, load_faiss_index, save_index
 
 INDEX_DIR = DATA_DIR / "faiss_index"
 
+_llm_manager = None  # type: ignore[var-annotated]
+
 
 @dataclass
 class QueryResult:
@@ -194,3 +196,21 @@ def query_chunks(
             )
         )
     return final_results
+
+
+def get_llm_manager():
+    """延迟加载 LLMManager，避免循环依赖。"""
+    global _llm_manager  # noqa: PLW0603
+    if _llm_manager is None:
+        from llm_manager import LLMManager
+
+        _llm_manager = LLMManager()
+    return _llm_manager
+
+
+def generate_llm_answer(question: str, results: Sequence[QueryResult], enabled: bool = True) -> str:
+    """使用 LLM 根据检索结果生成回答。"""
+    if not enabled:
+        return "LLM 回答已关闭，下方展示检索到的参考片段。"
+    manager = get_llm_manager()
+    return manager.generate_answer(question, results)
