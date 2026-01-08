@@ -1,15 +1,17 @@
 """
-向量化流程的全局配置。
+向量检索流程的全局配置。
 """
+from __future__ import annotations
+
 import os
 from pathlib import Path
 
+
 def _select_data_dir() -> Path:
     """
-    选择用于持久化数据的目录。
-
-    优先使用环境变量 VECTOR_DATA_DIR；若未设置且默认路径包含非 ASCII 字符，
-    则回退到系统临时目录，避免部分底层库在处理非 ASCII 路径时出错。
+    Determine where to store vector indices and processed outputs.
+    Prefer VECTOR_DATA_DIR; if the path contains non-ASCII characters,
+    fall back to the system temp directory to avoid FAISS issues.
     """
     env_path = os.getenv("VECTOR_DATA_DIR")
     if env_path:
@@ -21,31 +23,28 @@ def _select_data_dir() -> Path:
         return default_dir
     except UnicodeEncodeError:
         fallback = Path(os.getenv("TEMP", Path.cwd())) / "project_emb_data"
-        print(
-            f"检测到默认数据目录包含非 ASCII 字符，自动回退至 {fallback}。"
-        )
+        print(f"检测到默认数据目录包含非ASCII字符，自动回退至 {fallback}。")
         return fallback.resolve()
 
 
-# 存储向量索引与元数据的根目录
 DATA_DIR = _select_data_dir()
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-# 待处理的 PDF 文件路径，可根据实际位置调整
+UPLOAD_DIR = Path(os.getenv("UPLOAD_DIR", DATA_DIR / "uploads")).expanduser().resolve()
+UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
 PDF_PATH = Path(__file__).resolve().parent / "基本法.pdf"
 
-# DashScope API Key，必须预先配置在环境变量中
 DASHSCOPE_API_KEY = os.getenv("DASHSCOPE_API_KEY")
 if not DASHSCOPE_API_KEY:
-    raise EnvironmentError(
-        "未检测到 DASHSCOPE_API_KEY 环境变量，请在运行流程前完成配置。"
-    )
+    raise EnvironmentError("未检测到 DASHSCOPE_API_KEY 环境变量，请在运行流程前完成配置。")
 
-# LLM 模型配置，默认使用达摩盘 Qwen-turbo
 LLM_MODEL = os.getenv("LLM_MODEL", "qwen-turbo")
 LLM_ENABLED = os.getenv("LLM_ENABLED", "true").lower() == "true"
 
-# 文本切分参数，可以在此统一调整分段策略
+OCR_ENABLED = os.getenv("OCR_ENABLED", "true").lower() == "true"
+OCR_LANG = os.getenv("OCR_LANG", "chi_sim+eng")
+
 TEXT_SPLITTER_PARAMS = {
     "separators": ["\n\n", "\n", "。", ".", " ", ""],
     "chunk_size": 600,

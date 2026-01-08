@@ -33,3 +33,4 @@ Write-Host "    setx DASHSCOPE_API_KEY \"your_dashscope_key\"" -ForegroundColor 
 Write-Host "    setx VECTOR_DATA_DIR \"C:\faiss_data\"  # optional" -ForegroundColor Green
 Write-Host ""
 Write-Host "Redis defaults to localhost:6379. Update .env if you use a different host/port." -ForegroundColor Green
+Write-Host "若需 OCR，请安装 Tesseract 并确保已加入 PATH。" -ForegroundColor Green

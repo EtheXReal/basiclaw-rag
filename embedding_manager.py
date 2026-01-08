@@ -1,4 +1,4 @@
-"""
+﻿"""
 对 DashScope 向量化接口进行轻量封装，统一配置与调用方式。
 """
 from __future__ import annotations
@@ -11,7 +11,7 @@ from config import DASHSCOPE_API_KEY
 
 
 class EmbeddingManager:
-    """使用 DashScope text-embedding-v4 模型生成文本向量的管理类。"""
+    """封装 DashScope 文本向量接口。"""
 
     def __init__(self, model_name: str = "text-embedding-v4") -> None:
         self.model_name = model_name
@@ -21,16 +21,7 @@ class EmbeddingManager:
         )
 
     def embed_texts(self, texts: Iterable[str]) -> List[List[float]]:
-        """
-        生成一批文本块的向量表示。
-
-        参数:
-            texts: 需要进行向量化的文本可迭代对象。
-
-        返回值:
-            向量列表，每个元素对应一个文本块的向量表示。
-        """
-        # DashScopeEmbeddings 需要传入列表格式
+        """批量生成文本向量。"""
         batch = list(texts)
         if not batch:
             return []
@@ -38,7 +29,5 @@ class EmbeddingManager:
 
     @property
     def embedding_function(self) -> DashScopeEmbeddings:
-        """
-        返回底层的 embedding 对象，便于交给 LangChain VectorStore 等组件复用。
-        """
+        """返回底层 Embeddings 对象，供 FAISS 使用。"""
         return self._embedding

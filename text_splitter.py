@@ -1,5 +1,5 @@
-"""
-将 PDF 文本拆分为块并保留与原始页码大致映射关系的辅助方法。
+﻿"""
+将提取的文档文本拆分为保留页码映射的文本块。
 """
 from __future__ import annotations
 
@@ -15,15 +15,12 @@ from pdf_loader import PDFExtractionResult
 
 @dataclass(frozen=True)
 class TextChunk:
-    """表示一个可用于向量化的文本块。"""
-
     chunk_id: str
     content: str
     metadata: Dict[str, str]
 
 
 def _line_start_offsets(text: str) -> List[int]:
-    """计算文本中每一行开头的字符索引位置。"""
     offsets = [0]
     for idx, char in enumerate(text):
         if char == "\n":
@@ -32,7 +29,6 @@ def _line_start_offsets(text: str) -> List[int]:
 
 
 def _sanitize_sentence(text: str) -> str:
-    """清洗句子内容，移除多余空白与换行。"""
     cleaned = re.sub(r"\s+", " ", text).strip()
     cleaned = re.sub(r"(?<=\w)\s+(?=\w)", " ", cleaned)
     cleaned = re.sub(r"(?<=[\u4e00-\u9fff])\s+(?=[\u4e00-\u9fff])", "", cleaned)
@@ -43,22 +39,16 @@ def _sanitize_sentence(text: str) -> str:
 
 
 def _effective_length(text: str) -> int:
-    """用于计算句子或 chunk 的有效字数。"""
     return len(re.sub(r"\s+", "", text))
 
 
 def _iterate_sentences(text: str) -> List[Tuple[int, int, str]]:
-    """
-    遍历全文，按句号等标点或段落空行拆分成句子。
-
-    返回 (start_index, end_index, sentence_text) 列表。
-    """
     sentences: List[Tuple[int, int, str]] = []
     length = len(text)
     start = 0
     i = 0
     sentence_endings = {"。", "！", "？", ".", "!", "?", "；", ";", "…"}
-    closing_quotes = {"”", "』", "」", "\"", "'"}
+    closing_quotes = {"”", "』", "」", '"', "'"}
 
     while i < length:
         char = text[i]
@@ -69,7 +59,6 @@ def _iterate_sentences(text: str) -> List[Tuple[int, int, str]]:
         if char in sentence_endings:
             should_cut = True
         elif char == "…" and (i + 1 < length and text[i + 1] == "…"):
-            # 识别省略号“……”
             i += 1
             should_cut = True
         elif is_double_newline:
@@ -106,9 +95,6 @@ def _group_sentences(
     sentences: List[Tuple[int, int, str]],
     min_length: int = 100,
 ) -> List[List[Tuple[int, int, str, str]]]:
-    """
-    按顺序将句子组合成 chunk，确保每个 chunk 的有效字数不少于 min_length。
-    """
     grouped: List[List[Tuple[int, int, str, str]]] = []
     current: List[Tuple[int, int, str, str]] = []
     current_len = 0
@@ -137,26 +123,23 @@ def _group_sentences(
 
 
 def _sanitize_chunk(sentences: Sequence[Tuple[int, int, str, str]]) -> str:
-    """将 chunk 内的句子拼接并再次清洗。"""
     merged = " ".join(item[3] for item in sentences).strip()
     merged = re.sub(r"\s+", " ", merged)
     merged = re.sub(r"(?<=[\u4e00-\u9fff])\s+(?=[\u4e00-\u9fff])", "", merged)
     return merged
 
 
-def split_pdf_text(extraction: PDFExtractionResult) -> Iterable[TextChunk]:
-    """
-    将提取出的 PDF 文本拆分为带重叠的块，并附加元数据。
-
-    元数据包含大致的行号与页码，可用于后续 Redis 存储与检索。
-    """
+def split_pdf_text(
+    extraction: PDFExtractionResult,
+    *,
+    start_index: int = 0,
+    source_name: str | None = None,
+) -> Iterable[TextChunk]:
     sentences = _iterate_sentences(extraction.full_text)
-    grouped_sentences = _group_sentences(sentences, min_length=100)
+    grouped_sentences = _group_sentences(sentences, min_length=TEXT_SPLITTER_PARAMS["chunk_size"] // 6)
 
     line_offsets = _line_start_offsets(extraction.full_text)
     page_numbers = extraction.page_numbers
-
-    chunks: List[TextChunk] = []
 
     for idx, sentence_group in enumerate(grouped_sentences):
         sanitized_chunk = _sanitize_chunk(sentence_group)
@@ -171,32 +154,32 @@ def split_pdf_text(extraction: PDFExtractionResult) -> Iterable[TextChunk]:
             page = "unknown"
 
         metadata = {
+            "type": "text",
             "line_index": str(line_index),
             "page": page,
-            "chunk_order": str(idx),
+            "chunk_order": str(start_index + idx),
         }
-        chunks.append(
-            TextChunk(
-                chunk_id=f"chunk_{idx:04d}",
-                content=sanitized_chunk,
-                metadata=metadata,
-            )
-        )
+        if source_name:
+            metadata["source"] = source_name
 
-    return chunks
+        yield TextChunk(
+            chunk_id=f"chunk_{start_index + idx:04d}",
+            content=sanitized_chunk,
+            metadata=metadata,
+        )
 
 
 def export_chunks_to_txt(chunks: Sequence[TextChunk], filename: str = "processed_chunks.txt") -> None:
-    """
-    将处理后的 chunk 文本保存为 txt 文件，便于人工核查。
-    """
     output_dir = Path(__file__).resolve().parent
     output_path = output_dir / filename
     output_dir.mkdir(parents=True, exist_ok=True)
     lines: List[str] = []
     for chunk in chunks:
         page = chunk.metadata.get("page", "未知")
+        source = chunk.metadata.get("source", "")
         header = f"## {chunk.chunk_id} | 页码: {page}"
+        if source:
+            header += f" | 文档: {source}"
         lines.append(header)
         lines.append(chunk.content)
         lines.append("")

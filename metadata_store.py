@@ -25,13 +25,12 @@ class RedisMetadataStore:
     ) -> None:
         """
         初始化 Redis 客户端。
-
         参数:
             host: Redis 服务器地址。
             port: Redis 端口。
             db: Redis 数据库编号。
             password: Redis 密码，可选。
-            key_prefix: 存储键的统一前缀，避免污染其它数据。
+            key_prefix: 存储键的统一前缀，避免污染其他数据。
             redis_url: 可选的连接字符串，如果提供则优先生效。
         """
         if redis_url:
@@ -57,7 +56,6 @@ class RedisMetadataStore:
     def store_chunks(self, chunks: Iterable["TextChunk"]) -> None:
         """
         将文本块的元数据批量写入 Redis。
-
         每个文本块以 Hash 结构存储，包含 chunk_id、页码、行号以及原文片段。
         """
         pipe = self._client.pipeline(transaction=False)
@@ -76,7 +74,6 @@ class RedisMetadataStore:
     def fetch_metadata(self, chunk_ids: Iterable[str]) -> Dict[str, Dict[str, str]]:
         """
         根据 chunk_id 批量读取元数据。
-
         返回字典的键为 chunk_id，值为该块的元数据字典。
         """
         result: Dict[str, Dict[str, str]] = {}
