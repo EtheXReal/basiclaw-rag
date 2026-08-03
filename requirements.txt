@@ -1,15 +1,31 @@
+# 直接依赖的上界约束。精确版本见 requirements.lock.txt（用于复现环境）。
+
+# --- 配置 ---
+python-dotenv>=1.0.0
+
+# --- 文档解析 ---
 PyPDF2>=3.0.0
 PyMuPDF>=1.23.1
+python-docx>=1.1.1
+pytesseract>=0.3.10          # 可选：扫描版 PDF 的 OCR，需系统装 tesseract
+Pillow>=10.0.0
+
+# --- 向量化与检索 ---
 langchain-community>=0.3.9
 langchain-text-splitters>=0.3.2
-langchain-classic>=0.3.2
 dashscope>=1.16.0
 faiss-cpu>=1.8.0
-redis>=5.0.0
-opencc-python-reimplemented>=0.1.7
-gradio>=5.0.0
-python-docx>=1.1.1
-pytesseract>=0.3.10
-Pillow>=10.0.0
+numpy>=1.26.0
+
+# --- 多模态 ---
 torch>=2.1.0
 transformers>=4.37.0
+
+# --- 存储 ---
+redis>=5.0.0                 # 可选：METADATA_BACKEND=sqlite 时不需要
+
+# --- 文本处理 ---
+opencc-python-reimplemented>=0.1.7
+
+# --- Web UI ---
+gradio>=5.0.0
