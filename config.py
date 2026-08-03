@@ -20,6 +20,39 @@ load_dotenv(Path(__file__).resolve().parent / ".env", override=False)
 PROJECT_ROOT = Path(__file__).resolve().parent
 
 
+def _ensure_localhost_bypasses_proxy() -> None:
+    """
+    保证访问 localhost 时不走代理。
+
+    背景：在开启了系统级代理的机器上（macOS 系统代理、公司代理等），
+    Python 的 HTTP 客户端会把 127.0.0.1 的请求也发给代理，导致
+    Gradio 启动自检请求自己的 /gradio_api/startup-events 时拿到 502 而启动失败。
+
+    陷阱：urllib.request.getproxies() 的实现是
+        getproxies_environment() or getproxies_macosx_sysconf()
+    只要环境变量里存在任意 *_proxy（包括 no_proxy），就不再回退读系统代理。
+    因此若直接设 no_proxy，会意外把系统代理整个禁用，
+    连 HuggingFace 下载这类真正需要代理的流量也一起断掉。
+
+    正确顺序：先把系统代理显式落到环境变量，再追加 localhost 白名单。
+    """
+    import urllib.request
+
+    if not urllib.request.getproxies_environment():
+        for scheme, url in urllib.request.getproxies().items():
+            if scheme != "no":
+                os.environ.setdefault(f"{scheme}_proxy", url)
+
+    bypass = {h.strip() for h in os.environ.get("no_proxy", "").split(",") if h.strip()}
+    bypass.update({"localhost", "127.0.0.1", "::1"})
+    value = ",".join(sorted(bypass))
+    os.environ["no_proxy"] = value
+    os.environ["NO_PROXY"] = value
+
+
+_ensure_localhost_bypasses_proxy()
+
+
 def _select_data_dir() -> Path:
     """
     决定向量索引与中间产物的存放目录。

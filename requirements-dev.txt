@@ -1,0 +1,4 @@
+# 开发/验收工具，不进生产镜像
+-r requirements.txt
+
+playwright>=1.40.0       # 界面自动化与截图验收（需 playwright install chromium）
