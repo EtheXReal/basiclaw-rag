@@ -1,0 +1,41 @@
+# 一条命令起全栈：docker compose up
+#
+# 说明：应用默认 METADATA_BACKEND=auto。在 compose 环境下 Redis 可达，
+# 会自动选用 Redis；单独 docker run（无 Redis）时则回退 SQLite。
+# 这正是可插拔存储层的价值：同一个镜像适配两种部署形态。
+
+services:
+  app:
+    build: .
+    ports:
+      - "7860:7860"
+    environment:
+      # 密钥从宿主机环境或 .env 注入，不写进镜像
+      DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:?请先设置 DASHSCOPE_API_KEY}
+      METADATA_BACKEND: redis
+      REDIS_URL: redis://redis:6379/0
+      VECTOR_DATA_DIR: /app/data
+      GRADIO_SERVER_NAME: 0.0.0.0
+    volumes:
+      # 索引与上传文件持久化，重建容器不丢数据
+      - app_data:/app/data
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: redis-server --save 60 1 --appendonly yes
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+volumes:
+  app_data:
+  redis_data:
