@@ -1,0 +1,14 @@
+.git
+.gitignore
+.venv
+venv
+__pycache__
+*.py[cod]
+.env
+data/
+vector_data/
+processed_chunks.txt
+docs/
+assets/
+*.log
+.DS_Store
