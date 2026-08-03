@@ -90,7 +90,13 @@ def _extract_with_pymupdf(
             cleaned = _clean_text(extracted)
 
             if not cleaned.strip() and use_ocr:
-                cleaned = _run_ocr_on_page(page, page_idx, ocr_lang)
+                # OCR 失败不应中断整份文档的构建：188 页里因为 1 页缺少 OCR 环境
+                # 就丢掉全部成果，是不可接受的失败模式。降级为跳过该页并告警。
+                try:
+                    cleaned = _run_ocr_on_page(page, page_idx, ocr_lang)
+                except Exception as exc:  # noqa: BLE001
+                    print(f"警告：第 {page_idx} 页 OCR 失败，已跳过该页（{type(exc).__name__}: {exc}）")
+                    cleaned = ""
 
             if not cleaned.strip():
                 continue
