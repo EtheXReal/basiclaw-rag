@@ -23,7 +23,7 @@ from core.pipeline import (
     query_clip_images,
 )
 from embedding_manager import EmbeddingManager
-from metadata_store import RedisMetadataStore
+from metadata_store import create_metadata_store
 
 DEFAULT_LABEL = "默认：基本法"
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp"}
@@ -34,7 +34,7 @@ class AppState:
 
     def __init__(self) -> None:
         self.embedding_manager = EmbeddingManager()
-        self.metadata_store = RedisMetadataStore()
+        self.metadata_store = create_metadata_store()
         self.vector_store = None
         self.documents: dict[str, Path] = {DEFAULT_LABEL: PDF_PATH}
         self.selected_docs: List[str] = [DEFAULT_LABEL]
@@ -110,7 +110,7 @@ def build_index_with_metrics(
 ) -> Tuple[bool, str, str]:
     start_time = time.time()
     try:
-        count, saved = build_pipeline(
+        total_entries, text_chunk_count = build_pipeline(
             embedding_manager=STATE.embedding_manager,
             metadata_store=STATE.metadata_store,
             persist_dir=INDEX_DIR,
@@ -125,9 +125,16 @@ def build_index_with_metrics(
         STATE.dirty = False
         elapsed = time.time() - start_time
         STATE.last_build_time = elapsed
-        STATE.total_chunks = count
+        # build_pipeline 返回 (总条目数, 文本块数)，图片数是两者之差。
+        # 旧代码把总条目数当成文本块数展示，且 total_images 恒为 0。
+        STATE.total_chunks = text_chunk_count
+        STATE.total_images = total_entries - text_chunk_count
 
-        return True, f"✅ 构建完成: {count} 条目, 耗时 {elapsed:.1f}s", get_stats_text()
+        return (
+            True,
+            f"✅ 构建完成: {text_chunk_count} 文本块 + {STATE.total_images} 图片, 耗时 {elapsed:.1f}s",
+            get_stats_text(),
+        )
     except Exception as exc:
         STATE.dirty = True
         return False, f"❌ 构建失败: {exc}", ""
@@ -145,11 +152,14 @@ def perform_query(
 
     # 自动重建
     if STATE.dirty or STATE.vector_store is None:
+        # 裸 except 会连 KeyboardInterrupt / SystemExit 一起吞掉，
+        # 导致 Ctrl-C 杀不死进程。永远捕获 Exception 而非裸 except。
         try:
             STATE.ensure_vector_store()
             if STATE.vector_store.index.ntotal == 0:
                 STATE.dirty = True
-        except:
+        except Exception as exc:
+            print(f"[query] 加载已有索引失败，将触发重建: {exc}")
             STATE.dirty = True
 
         if STATE.dirty:
@@ -247,8 +257,8 @@ def delete_docs(selected: List[str]) -> Tuple[Any, str]:
         if path and path.exists():
             try:
                 os.remove(path)
-            except:
-                pass
+            except OSError as exc:
+                print(f"[delete] 删除文件失败 {path}: {exc}")
         removed.append(label)
 
     if DEFAULT_LABEL not in STATE.documents:
@@ -282,6 +292,7 @@ def get_stats_text() -> str:
     return f"""| 指标 | 值 |
 |---|---|
 | 文本块 | {s['total_chunks']} |
+| 图片数 | {s['total_images']} |
 | 文档数 | {s['documents_count']} |
 | 文本索引 | {_format_size(s['text_index_size'])} |
 | CLIP索引 | {_format_size(s['clip_index_size'])} |
@@ -290,7 +301,8 @@ def get_stats_text() -> str:
 
 
 # ==================== UI ====================
-with gr.Blocks(title="DocChat - RAG知识库检索系统", theme=gr.themes.Soft()) as demo:
+# Gradio 6.0 起 theme 从 Blocks 构造器移到 launch()
+with gr.Blocks(title="DocChat - RAG知识库检索系统") as demo:
 
     gr.Markdown("# DocChat\n**RAG 知识库检索系统**")
 
@@ -394,4 +406,11 @@ with gr.Blocks(title="DocChat - RAG知识库检索系统", theme=gr.themes.Soft(
     )
 
 if __name__ == "__main__":
-    demo.launch()
+    # server_name 必须可配置：Gradio 默认绑 127.0.0.1，
+    # 在容器里会导致 EXPOSE 的端口从宿主机连不上，必须绑 0.0.0.0。
+    # 本地开发仍默认 127.0.0.1，避免无意间把服务暴露到局域网。
+    demo.launch(
+        theme=gr.themes.Soft(),
+        server_name=os.getenv("GRADIO_SERVER_NAME", "127.0.0.1"),
+        server_port=int(os.getenv("GRADIO_SERVER_PORT", "7860")),
+    )

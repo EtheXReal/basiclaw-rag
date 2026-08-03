@@ -14,7 +14,7 @@ from clip_vector_store import ClipEntry, ClipVectorStore, build_clip_index, load
 from config import DATA_DIR, PDF_PATH, OCR_ENABLED
 from document_loader import load_document
 from embedding_manager import EmbeddingManager
-from metadata_store import RedisMetadataStore
+from metadata_store import MetadataStore
 from pdf_loader import extract_images_from_pdf
 from text_splitter import TextChunk, export_chunks_to_txt, split_pdf_text
 from vector_store import build_faiss_index, load_faiss_index, save_index
@@ -60,7 +60,7 @@ def get_clip_store() -> ClipVectorStore:
 
 def build_pipeline(
     embedding_manager: EmbeddingManager,
-    metadata_store: RedisMetadataStore,
+    metadata_store: MetadataStore,
     persist_dir: Path | None = None,
     limit: int | None = None,
     source_paths: Sequence[Path | str] | None = None,
@@ -95,17 +95,28 @@ def build_pipeline(
     text_chunks: List[TextChunk] = []
     image_chunks: List[TextChunk] = []
     clip_entries: List[ClipEntry] = []
-    chunk_counter = 0
     use_ocr_flag = use_ocr if use_ocr is not None else OCR_ENABLED
     clip_manager = get_clip_manager()
+
+    # 唯一的 ID 发号器。文本块与图片块共用同一个计数器，
+    # 任何需要 chunk_id 的地方都必须经过它，不允许在别处手工推算编号。
+    # （旧实现用 chunk_counter + len(doc_chunks) + len(image_chunks) 推算图片 ID，
+    #   而 chunk_counter 从不计入图片数，导致第二个文档的文本块 ID
+    #   与第一个文档的图片 ID 相撞，Redis 中互相覆盖。）
+    chunk_counter = 0
+
+    def allocate_chunk_id() -> str:
+        nonlocal chunk_counter
+        chunk_id = f"chunk_{chunk_counter:04d}"
+        chunk_counter += 1
+        return chunk_id
 
     for src in sources:
         suffix = src.suffix.lower()
 
         # 处理独立图片文件
         if suffix in IMAGE_SUFFIXES:
-            chunk_id = "chunk_{:04d}".format(chunk_counter)
-            chunk_counter += 1
+            chunk_id = allocate_chunk_id()
             metadata = {
                 "type": "image",
                 "page": "N/A",
@@ -130,11 +141,30 @@ def build_pipeline(
             )
         )
 
-        # 提取 PDF 内嵌图片
+        # limit 截断必须发生在推进计数器之前，否则被丢弃的块会白白占掉编号。
+        if limit is not None:
+            remaining = limit - len(text_chunks)
+            if remaining <= 0:
+                break
+            if len(doc_chunks) > remaining:
+                doc_chunks = doc_chunks[:remaining]
+
+        # 先结算文本块占用的编号区间，再让图片继续往后取号。
+        # split_pdf_text 内部按 start_index + idx 生成 ID，与发号器格式一致。
+        if doc_chunks:
+            chunk_counter += len(doc_chunks)
+            text_chunks.extend(doc_chunks)
+
+            # 为文本块生成 CLIP 嵌入（用于跨模态检索）
+            embeddings = clip_manager.embed_texts([chunk.content for chunk in doc_chunks])
+            for chunk, embedding in zip(doc_chunks, embeddings):
+                clip_entries.append(ClipEntry(chunk.chunk_id, embedding))
+
+        # 提取 PDF 内嵌图片（此时 chunk_counter 已越过本文档的文本块区间）
         if extract_pdf_images and suffix == ".pdf":
             extracted_images = extract_images_from_pdf(src, EXTRACTED_IMAGES_DIR)
             for img_info in extracted_images:
-                img_chunk_id = "chunk_{:04d}".format(chunk_counter + len(doc_chunks) + len(image_chunks))
+                img_chunk_id = allocate_chunk_id()
                 metadata = {
                     "type": "image",
                     "page": str(img_info.page_number),
@@ -153,33 +183,22 @@ def build_pipeline(
                 except Exception as e:
                     print(f"警告：嵌入图片失败 {img_info.image_path}: {e}")
 
-        if limit is not None:
-            remaining = limit - len(text_chunks)
-            if remaining <= 0:
-                break
-            if len(doc_chunks) > remaining:
-                doc_chunks = doc_chunks[:remaining]
-
-        if not doc_chunks:
-            continue
-
-        chunk_counter += len(doc_chunks)
-        text_chunks.extend(doc_chunks)
-
-        # 为文本块生成 CLIP 嵌入（用于跨模态检索）
-        embeddings = clip_manager.embed_texts([chunk.content for chunk in doc_chunks])
-        for chunk, embedding in zip(doc_chunks, embeddings):
-            clip_entries.append(ClipEntry(chunk.chunk_id, embedding))
-
         if limit is not None and len(text_chunks) >= limit:
             break
+
+    # 断言：ID 必须全局唯一。这是 build 阶段的自检，
+    # 一旦将来有人改动发号逻辑导致回归，这里会立刻炸出来而不是静默写坏数据。
+    all_ids = [c.chunk_id for c in text_chunks] + [c.chunk_id for c in image_chunks]
+    if len(all_ids) != len(set(all_ids)):
+        duplicates = sorted({cid for cid in all_ids if all_ids.count(cid) > 1})
+        raise RuntimeError(f"chunk_id 发生冲突，构建中止。重复 ID：{duplicates}")
 
     # Build text vector store
     vector_store = build_faiss_index(text_chunks, embedding_manager)
     save_index(vector_store, persist_dir)
 
     # Persist metadata (text + image)
-    metadata_store.clear_prefix()
+    metadata_store.clear()
     metadata_store.store_chunks(text_chunks + image_chunks)
 
     # Export combined chunks for manual review
@@ -280,7 +299,7 @@ def _build_preview(
 def query_chunks(
     query: str,
     embedding_manager: EmbeddingManager,
-    metadata_store: RedisMetadataStore,
+    metadata_store: MetadataStore,
     vector_store,
     top_k: int = 3,
 ) -> List[QueryResult]:
@@ -353,7 +372,7 @@ def query_chunks(
 
 def query_clip_images(
     query: str,
-    metadata_store: RedisMetadataStore,
+    metadata_store: MetadataStore,
     top_k: int = 3,
 ) -> List[QueryResult]:
     """只搜索图片，不搜索文本块"""
