@@ -11,7 +11,7 @@ import re
 
 from clip_manager import ClipEmbeddingManager
 from clip_vector_store import ClipEntry, ClipVectorStore, build_clip_index, load_clip_index
-from config import DATA_DIR, PDF_PATH, OCR_ENABLED
+from config import DATA_DIR, OCR_ENABLED, PDF_PATH, RERANK_CANDIDATES, RERANK_ENABLED
 from document_loader import load_document
 from embedding_manager import EmbeddingManager
 from metadata_store import MetadataStore
@@ -39,6 +39,9 @@ class QueryResult:
     source: str
     result_type: str
     asset_path: str | None = None
+    # 重排后的相关性分数（0~1，越大越相关）。未经重排时为 None。
+    # 与 score 方向相反（score 是 L2 距离，越小越相似），展示时必须分开处理。
+    rerank_score: float | None = None
 
 
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp"}
@@ -296,12 +299,42 @@ def _build_preview(
     return preview[:max_length].rstrip() + "…"
 
 
+def _apply_rerank(query: str, results: List[QueryResult], top_k: int) -> List[QueryResult]:
+    """
+    对粗召回结果做 cross-encoder 精排，失败时降级为原顺序。
+
+    降级而非抛错的理由：重排是「锦上添花」的精度优化，粗召回结果本身已经可用。
+    为了排序质量把整个检索打挂，是错误的可用性权衡。
+    但降级必须打日志，否则线上重排静默失效、指标悄悄退化，没人会发现。
+    """
+    from reranker import RerankError, get_reranker
+
+    if len(results) <= 1:
+        return results[:top_k]
+
+    try:
+        ranking = get_reranker().rank(query, [r.content or r.preview for r in results])
+    except RerankError as exc:
+        print(f"[rerank] 重排失败，降级为向量召回顺序: {exc}")
+        return results[:top_k]
+
+    reordered: List[QueryResult] = []
+    for idx, relevance in ranking:
+        if 0 <= idx < len(results):
+            item = results[idx]
+            item.rerank_score = relevance
+            reordered.append(item)
+    return reordered[:top_k]
+
+
 def query_chunks(
     query: str,
     embedding_manager: EmbeddingManager,
     metadata_store: MetadataStore,
     vector_store,
     top_k: int = 3,
+    rerank: bool | None = None,
+    candidate_k: int | None = None,
 ) -> List[QueryResult]:
     from opencc import OpenCC
 
@@ -325,10 +358,16 @@ def query_chunks(
     keywords_trad = list({cc_s2t.convert(kw) for kw in keywords_raw})
     keywords_simp = list({cc_t2s.convert(kw) for kw in keywords_raw})
 
+    use_rerank = RERANK_ENABLED if rerank is None else rerank
+    # 开启重排时放宽粗召回数量：精排只能在候选集内部重新排序，
+    # 正确答案若没进候选集，重排再准也救不回来。
+    recall_k = (candidate_k or RERANK_CANDIDATES) if use_rerank else top_k
+    recall_k = max(recall_k, top_k)
+
     results = []
     seen_chunks = set()
     for q in combined_queries:
-        for doc, score in vector_store.similarity_search_with_score(q, k=top_k):
+        for doc, score in vector_store.similarity_search_with_score(q, k=recall_k):
             chunk_id = doc.metadata.get("chunk_id")
             if chunk_id and chunk_id in seen_chunks:
                 continue
@@ -336,7 +375,7 @@ def query_chunks(
             results.append((doc, score))
 
     results.sort(key=lambda item: item[1])
-    results = results[:top_k]
+    results = results[:recall_k]
     if not results:
         return []
 
@@ -367,7 +406,10 @@ def query_chunks(
                 asset_path=asset_path,
             )
         )
-    return final_results
+
+    if use_rerank:
+        return _apply_rerank(query, final_results, top_k)
+    return final_results[:top_k]
 
 
 def query_clip_images(
