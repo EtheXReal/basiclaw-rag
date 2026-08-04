@@ -124,7 +124,16 @@ def main() -> None:
             if text_results:
                 print("[文本检索结果]")
                 for rank, item in enumerate(text_results, start=1):
-                    print(f"Top{rank} —— 相似度得分 {item.score:.4f}")
+                    # 重排后排序依据是 rerank_score（越大越相关），
+                    # 而 score 仍是召回阶段的 L2 距离（越小越相似），两者方向相反。
+                    # 只打印 score 会让展示的数字与实际排序依据对不上。
+                    if item.rerank_score is not None:
+                        print(
+                            f"Top{rank} —— 重排相关度 {item.rerank_score:.4f}"
+                            f"（召回 L2 距离 {item.score:.4f}）"
+                        )
+                    else:
+                        print(f"Top{rank} —— 向量距离 {item.score:.4f}")
                     print(f"  文档: {item.source}")
                     print(f"  页码: {item.page} | 行号: {item.line_index}")
                     print(f"  chunk_id: {item.chunk_id}")
