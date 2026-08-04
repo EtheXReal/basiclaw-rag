@@ -89,6 +89,13 @@ EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-v4")
 LLM_MODEL = os.getenv("LLM_MODEL", "qwen-turbo")
 LLM_ENABLED = os.getenv("LLM_ENABLED", "true").lower() == "true"
 
+# ---------------------------------------------------------------- 多模态
+
+# 关闭后不加载 torch / transformers / CLIP 权重，
+# 依赖体积从约 1.2GB 降到约 300MB，常驻内存从约 1.5GB 降到约 400MB。
+# 小内存机器（<2GB）上部署时必须关闭，否则加载模型即 OOM 或疯狂 swap。
+CLIP_ENABLED = os.getenv("CLIP_ENABLED", "true").lower() == "true"
+
 # ---------------------------------------------------------------- 重排
 
 RERANK_ENABLED = os.getenv("RERANK_ENABLED", "true").lower() == "true"

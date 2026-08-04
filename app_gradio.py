@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Tuple
 
 import gradio as gr
 
-from config import DATA_DIR, LLM_ENABLED, OCR_ENABLED, PDF_PATH, UPLOAD_DIR
+from config import CLIP_ENABLED, DATA_DIR, LLM_ENABLED, OCR_ENABLED, PDF_PATH, UPLOAD_DIR
 from core.pipeline import (
     CLIP_INDEX_DIR,
     INDEX_DIR,
@@ -368,7 +368,14 @@ with gr.Blocks(title="DocChat - RAG知识库检索系统") as demo:
                     scale=4
                 )
                 with gr.Column(scale=1):
-                    search_mode = gr.Radio(["文本检索", "图文检索"], value="图文检索", label="模式")
+                    # CLIP 关闭时（小内存部署）不展示图文检索，避免用户选了却永远返回空
+                    _modes = ["文本检索", "图文检索"] if CLIP_ENABLED else ["文本检索"]
+                    search_mode = gr.Radio(
+                        _modes,
+                        value=_modes[-1],
+                        label="模式",
+                        visible=CLIP_ENABLED,
+                    )
                     top_k = gr.Slider(1, 10, value=3, step=1, label="结果数")
 
             with gr.Row():
