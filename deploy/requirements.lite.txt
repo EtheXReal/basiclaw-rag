@@ -1,0 +1,28 @@
+# 轻量部署依赖：不含 CLIP 图像检索。
+#
+# 与 requirements.txt 的差异：去掉 torch / transformers（约 900MB）
+# 以及 redis / pytesseract（服务器上不部署 Redis，索引预构建后不需要 OCR）。
+# 对应 CLIP_ENABLED=false，文本检索与 cross-encoder 重排完全不受影响。
+#
+# 安装后约 300MB，常驻内存约 400MB，可在 1GB 可用内存的机器上稳定运行。
+
+python-dotenv>=1.0.0
+
+# 文档解析（构建索引时需要）
+PyPDF2>=3.0.0
+PyMuPDF>=1.23.1
+python-docx>=1.1.1
+Pillow>=10.0.0
+
+# 检索
+langchain-community>=0.3.9
+langchain-text-splitters>=0.3.2
+dashscope>=1.16.0
+faiss-cpu>=1.8.0
+numpy>=1.26.0
+
+# 繁简转换
+opencc-python-reimplemented>=0.1.7
+
+# Web UI
+gradio>=5.0.0
