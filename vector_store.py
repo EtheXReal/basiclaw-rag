@@ -3,6 +3,7 @@
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Iterable, List, Sequence
 
@@ -14,7 +15,10 @@ from langchain_core.documents import Document
 from embedding_manager import EmbeddingManager
 from text_splitter import TextChunk
 
-DEFAULT_TEXT_EMBED_DIM = 1536  # DashScope text-embedding-v4 dimension
+# DashScope text-embedding-v4 默认输出 1024 维（实测确认）。
+# 原值 1536 是错的：该常量仅在「空索引」分支使用，平时不触发，
+# 一旦触发就是难以定位的维度不匹配错误。
+DEFAULT_TEXT_EMBED_DIM = int(os.getenv("TEXT_EMBED_DIM", "1024"))
 
 
 def build_faiss_index(

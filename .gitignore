@@ -1,6 +1,25 @@
+# Python
 __pycache__/
-*.pyc
-*.log
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# 环境与密钥
 .env
+
+# 数据产物
+# 注意：DATA_DIR 默认是 <项目根>/data，旧的 vector_data/ 规则从未生效，
+# 导致 FAISS 索引、SQLite 库、用户上传文件都可能被误提交。
+# 前导斜杠限定只匹配仓库根目录的 data/。
+# 写成 data/ 会匹配任意层级的同名目录，把 eval/data/testset.jsonl 也挡掉——
+# 而测试集是评测的基准数据，必须入库才能复现结果。
+/data/
+/vector_data/
 processed_chunks.txt
-vector_data/
+
+# 日志
+*.log
+
+# 系统
+.DS_Store

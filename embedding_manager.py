@@ -7,17 +7,17 @@ from typing import Iterable, List
 
 from langchain_community.embeddings import DashScopeEmbeddings
 
-from config import DASHSCOPE_API_KEY
+from config import EMBEDDING_MODEL, require_api_key
 
 
 class EmbeddingManager:
     """封装 DashScope 文本向量接口。"""
 
-    def __init__(self, model_name: str = "text-embedding-v4") -> None:
-        self.model_name = model_name
+    def __init__(self, model_name: str | None = None) -> None:
+        self.model_name = model_name or EMBEDDING_MODEL
         self._embedding = DashScopeEmbeddings(
-            model=model_name,
-            dashscope_api_key=DASHSCOPE_API_KEY,
+            model=self.model_name,
+            dashscope_api_key=require_api_key(),
         )
 
     def embed_texts(self, texts: Iterable[str]) -> List[List[float]]:

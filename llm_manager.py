@@ -8,7 +8,7 @@ from typing import Sequence, TYPE_CHECKING
 
 from dashscope import Generation
 
-from config import DASHSCOPE_API_KEY, LLM_MODEL
+from config import LLM_MODEL, require_api_key
 
 if TYPE_CHECKING:  # pragma: no cover
     from core.pipeline import QueryResult
@@ -57,7 +57,7 @@ class LLMManager:
                 ],
                 result_format="message",
                 temperature=0.2,
-                api_key=DASHSCOPE_API_KEY,
+                api_key=require_api_key(),
             )
             if response.status_code == HTTPStatus.OK:
                 content = response.output["choices"][0]["message"]["content"]

@@ -23,7 +23,7 @@ from core.pipeline import (
     query_clip_images,
 )
 from embedding_manager import EmbeddingManager
-from metadata_store import RedisMetadataStore
+from metadata_store import create_metadata_store
 
 DEFAULT_LABEL = "默认：基本法"
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp"}
@@ -34,7 +34,7 @@ class AppState:
 
     def __init__(self) -> None:
         self.embedding_manager = EmbeddingManager()
-        self.metadata_store = RedisMetadataStore()
+        self.metadata_store = create_metadata_store()
         self.vector_store = None
         self.documents: dict[str, Path] = {DEFAULT_LABEL: PDF_PATH}
         self.selected_docs: List[str] = [DEFAULT_LABEL]
@@ -52,12 +52,32 @@ class AppState:
             if hasattr(self.vector_store, 'index') and self.vector_store.index.ntotal > 0:
                 self.current_sources = [PDF_PATH]
                 self.dirty = False
+                self.refresh_counts()
             else:
                 self.vector_store = None
                 self.dirty = True
         except Exception:
             self.vector_store = None
             self.dirty = True
+
+    def refresh_counts(self) -> None:
+        """
+        从已加载的索引回填统计数字。
+
+        原实现只在本次会话执行过构建后才给 total_chunks 赋值，
+        导致每次重启服务后统计面板都谎报「文本块 0 / 图片数 0」，
+        而磁盘上的索引其实是完整的。
+
+        文本块数以 FAISS 索引为准（只有文本块进入向量索引），
+        图片数由元数据总数减去文本块数得出。
+        """
+        try:
+            text_count = int(self.vector_store.index.ntotal) if self.vector_store else 0
+            total = self.metadata_store.count()
+            self.total_chunks = text_count
+            self.total_images = max(0, total - text_count)
+        except Exception as exc:
+            print(f"[state] 读取索引统计失败: {exc}")
 
     def ensure_vector_store(self) -> None:
         if self.vector_store is None:
@@ -110,7 +130,7 @@ def build_index_with_metrics(
 ) -> Tuple[bool, str, str]:
     start_time = time.time()
     try:
-        count, saved = build_pipeline(
+        total_entries, text_chunk_count = build_pipeline(
             embedding_manager=STATE.embedding_manager,
             metadata_store=STATE.metadata_store,
             persist_dir=INDEX_DIR,
@@ -125,9 +145,16 @@ def build_index_with_metrics(
         STATE.dirty = False
         elapsed = time.time() - start_time
         STATE.last_build_time = elapsed
-        STATE.total_chunks = count
+        # build_pipeline 返回 (总条目数, 文本块数)，图片数是两者之差。
+        # 旧代码把总条目数当成文本块数展示，且 total_images 恒为 0。
+        STATE.total_chunks = text_chunk_count
+        STATE.total_images = total_entries - text_chunk_count
 
-        return True, f"✅ 构建完成: {count} 条目, 耗时 {elapsed:.1f}s", get_stats_text()
+        return (
+            True,
+            f"✅ 构建完成: {text_chunk_count} 文本块 + {STATE.total_images} 图片, 耗时 {elapsed:.1f}s",
+            get_stats_text(),
+        )
     except Exception as exc:
         STATE.dirty = True
         return False, f"❌ 构建失败: {exc}", ""
@@ -145,11 +172,14 @@ def perform_query(
 
     # 自动重建
     if STATE.dirty or STATE.vector_store is None:
+        # 裸 except 会连 KeyboardInterrupt / SystemExit 一起吞掉，
+        # 导致 Ctrl-C 杀不死进程。永远捕获 Exception 而非裸 except。
         try:
             STATE.ensure_vector_store()
             if STATE.vector_store.index.ntotal == 0:
                 STATE.dirty = True
-        except:
+        except Exception as exc:
+            print(f"[query] 加载已有索引失败，将触发重建: {exc}")
             STATE.dirty = True
 
         if STATE.dirty:
@@ -247,8 +277,8 @@ def delete_docs(selected: List[str]) -> Tuple[Any, str]:
         if path and path.exists():
             try:
                 os.remove(path)
-            except:
-                pass
+            except OSError as exc:
+                print(f"[delete] 删除文件失败 {path}: {exc}")
         removed.append(label)
 
     if DEFAULT_LABEL not in STATE.documents:
@@ -270,8 +300,29 @@ def update_selection(selected: List[str]) -> str:
     return f"已选择 {len(selected)} 个文档"
 
 
+def _parse_limit(raw) -> int | None:
+    """
+    解析「限制块数」输入。空、空白、0、非法值一律视为不限制。
+
+    旧写法 `int(limit) if limit else None` 有两个问题：
+    - 输入纯空白时 int('  ') 抛 ValueError，整个重建失败
+    - 输入 '0' 时非空字符串为真值，会真的按「限制 0 块」构建出空索引
+    """
+    if raw is None:
+        return None
+    text = str(raw).strip()
+    if not text:
+        return None
+    try:
+        value = int(float(text))
+    except ValueError:
+        print(f"[rebuild] 无法解析限制块数 {raw!r}，按不限制处理")
+        return None
+    return value if value > 0 else None
+
+
 def rebuild_index(limit, docs, use_ocr, extract_img) -> Tuple[str, str]:
-    limit_int = int(limit) if limit else None
+    limit_int = _parse_limit(limit)
     paths = [STATE.documents.get(d, PDF_PATH) for d in (docs or STATE.selected_docs or [DEFAULT_LABEL])]
     success, status, stats = build_index_with_metrics(paths, limit_int, use_ocr, extract_img)
     return status, stats
@@ -282,6 +333,7 @@ def get_stats_text() -> str:
     return f"""| 指标 | 值 |
 |---|---|
 | 文本块 | {s['total_chunks']} |
+| 图片数 | {s['total_images']} |
 | 文档数 | {s['documents_count']} |
 | 文本索引 | {_format_size(s['text_index_size'])} |
 | CLIP索引 | {_format_size(s['clip_index_size'])} |
@@ -290,7 +342,8 @@ def get_stats_text() -> str:
 
 
 # ==================== UI ====================
-with gr.Blocks(title="DocChat - RAG知识库检索系统", theme=gr.themes.Soft()) as demo:
+# Gradio 6.0 起 theme 从 Blocks 构造器移到 launch()
+with gr.Blocks(title="DocChat - RAG知识库检索系统") as demo:
 
     gr.Markdown("# DocChat\n**RAG 知识库检索系统**")
 
@@ -311,9 +364,14 @@ with gr.Blocks(title="DocChat - RAG知识库检索系统", theme=gr.themes.Soft(
             with gr.Row():
                 use_llm = gr.Checkbox(label="LLM回答", value=LLM_ENABLED, info="启用后将调用您的 DashScope API 生成回答")
                 query_btn = gr.Button("🔍 检索", variant="primary", scale=2)
-                metrics_text = gr.Textbox(label="", interactive=False, scale=2)
+                # label="" 在 Gradio 6 下会回落显示组件类名「Textbox」，
+                # 纯状态展示组件应该用 show_label=False 而不是空字符串。
+                metrics_text = gr.Textbox(show_label=False, interactive=False, scale=2)
 
-            answer_box = gr.Markdown(label="AI 回答")
+            # gr.Markdown 不渲染 label 参数，答案会变成一段没有归属的裸文本。
+            # 用一个静态标题给它明确的视觉归属。
+            gr.Markdown("#### 🤖 AI 回答")
+            answer_box = gr.Markdown()
 
             with gr.Row():
                 with gr.Column(scale=2):
@@ -341,14 +399,22 @@ with gr.Blocks(title="DocChat - RAG知识库检索系统", theme=gr.themes.Soft(
                     )
                     with gr.Row():
                         del_btn = gr.Button("🗑 删除选中")
-                        sel_msg = gr.Textbox(label="", interactive=False, scale=2)
+                        sel_msg = gr.Textbox(show_label=False, interactive=False, scale=2)
 
             gr.Markdown("---")
 
             with gr.Row():
                 use_ocr = gr.Checkbox(label="OCR", value=OCR_ENABLED)
                 extract_img = gr.Checkbox(label="提取PDF图片", value=True)
-                limit_num = gr.Number(label="限制块数(调试)", value=None, precision=0)
+                # 这里刻意不用 gr.Number：Gradio 6 下 Number(value=None) 仍渲染成 0，
+                # 会被误读为「限制 0 块」，且 placeholder 永远没机会显示。
+                # Textbox 空值是真的空，placeholder 可见，
+                # 且下游 `int(x) if x else None` 对空字符串同样成立。
+                limit_num = gr.Textbox(
+                    label="限制块数(调试)",
+                    value="",
+                    placeholder="留空 = 不限制",
+                )
                 rebuild_btn = gr.Button("🔨 重建索引", variant="primary")
 
             with gr.Row():
@@ -394,4 +460,11 @@ with gr.Blocks(title="DocChat - RAG知识库检索系统", theme=gr.themes.Soft(
     )
 
 if __name__ == "__main__":
-    demo.launch()
+    # server_name 必须可配置：Gradio 默认绑 127.0.0.1，
+    # 在容器里会导致 EXPOSE 的端口从宿主机连不上，必须绑 0.0.0.0。
+    # 本地开发仍默认 127.0.0.1，避免无意间把服务暴露到局域网。
+    demo.launch(
+        theme=gr.themes.Soft(),
+        server_name=os.getenv("GRADIO_SERVER_NAME", "127.0.0.1"),
+        server_port=int(os.getenv("GRADIO_SERVER_PORT", "7860")),
+    )
