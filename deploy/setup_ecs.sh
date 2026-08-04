@@ -25,6 +25,13 @@ if [ -z "${DASHSCOPE_API_KEY:-}" ]; then
 fi
 
 echo "==> [1/5] 安装系统依赖"
+# 无人值守安装。缺这两个变量时 Ubuntu 22.04 会弹出交互式对话框卡住脚本：
+#   - DEBIAN_FRONTEND=noninteractive 禁掉 debconf 的配置问答
+#   - NEEDRESTART_MODE=a 让 needrestart 自动重启受影响的服务，
+#     而不是弹出「Daemons using outdated libraries」让人选
+export DEBIAN_FRONTEND=noninteractive
+export NEEDRESTART_MODE=a
+export NEEDRESTART_SUSPEND=1
 apt-get update -qq
 apt-get install -y -qq python3-venv python3-pip git nginx
 
