@@ -9,9 +9,23 @@ from typing import Dict, List, Sequence, Tuple
 
 import re
 
-from clip_manager import ClipEmbeddingManager
+from typing import TYPE_CHECKING
+
 from clip_vector_store import ClipEntry, ClipVectorStore, build_clip_index, load_clip_index
-from config import DATA_DIR, PDF_PATH, OCR_ENABLED
+from config import (
+    CLIP_ENABLED,
+    DATA_DIR,
+    OCR_ENABLED,
+    PDF_PATH,
+    RERANK_CANDIDATES,
+    RERANK_ENABLED,
+)
+
+if TYPE_CHECKING:  # pragma: no cover
+    # clip_manager 会 import torch + transformers（约 600MB 依赖）。
+    # 放在 TYPE_CHECKING 下，使得 CLIP_ENABLED=false 时整个进程不加载这些包——
+    # 这是小内存机器能跑起来的前提。类型标注靠 from __future__ import annotations 延迟求值。
+    from clip_manager import ClipEmbeddingManager
 from document_loader import load_document
 from embedding_manager import EmbeddingManager
 from metadata_store import MetadataStore
@@ -39,14 +53,21 @@ class QueryResult:
     source: str
     result_type: str
     asset_path: str | None = None
+    # 重排后的相关性分数（0~1，越大越相关）。未经重排时为 None。
+    # 与 score 方向相反（score 是 L2 距离，越小越相似），展示时必须分开处理。
+    rerank_score: float | None = None
 
 
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp"}
 
 
-def get_clip_manager() -> ClipEmbeddingManager:
+def get_clip_manager() -> "ClipEmbeddingManager":
     global _clip_manager  # noqa: PLW0603
     if _clip_manager is None:
+        if not CLIP_ENABLED:
+            raise RuntimeError("CLIP 已关闭（CLIP_ENABLED=false），无法加载图像模型。")
+        from clip_manager import ClipEmbeddingManager  # 延迟导入：此处才拉起 torch
+
         _clip_manager = ClipEmbeddingManager()
     return _clip_manager
 
@@ -96,7 +117,8 @@ def build_pipeline(
     image_chunks: List[TextChunk] = []
     clip_entries: List[ClipEntry] = []
     use_ocr_flag = use_ocr if use_ocr is not None else OCR_ENABLED
-    clip_manager = get_clip_manager()
+    # CLIP 关闭时不加载模型，跨模态索引留空；文本检索链路完全不受影响。
+    clip_manager = get_clip_manager() if CLIP_ENABLED else None
 
     # 唯一的 ID 发号器。文本块与图片块共用同一个计数器，
     # 任何需要 chunk_id 的地方都必须经过它，不允许在别处手工推算编号。
@@ -128,7 +150,8 @@ def build_pipeline(
             content = f"[图像] {src.name}"
             image_chunk = TextChunk(chunk_id=chunk_id, content=content, metadata=metadata)
             image_chunks.append(image_chunk)
-            clip_entries.append(ClipEntry(chunk_id, clip_manager.embed_image(src)))
+            if clip_manager is not None:
+                clip_entries.append(ClipEntry(chunk_id, clip_manager.embed_image(src)))
             continue
 
         # 处理文档文件
@@ -156,9 +179,10 @@ def build_pipeline(
             text_chunks.extend(doc_chunks)
 
             # 为文本块生成 CLIP 嵌入（用于跨模态检索）
-            embeddings = clip_manager.embed_texts([chunk.content for chunk in doc_chunks])
-            for chunk, embedding in zip(doc_chunks, embeddings):
-                clip_entries.append(ClipEntry(chunk.chunk_id, embedding))
+            if clip_manager is not None:
+                embeddings = clip_manager.embed_texts([chunk.content for chunk in doc_chunks])
+                for chunk, embedding in zip(doc_chunks, embeddings):
+                    clip_entries.append(ClipEntry(chunk.chunk_id, embedding))
 
         # 提取 PDF 内嵌图片（此时 chunk_counter 已越过本文档的文本块区间）
         if extract_pdf_images and suffix == ".pdf":
@@ -178,10 +202,11 @@ def build_pipeline(
                 content = f"[PDF内嵌图像] {src.name} 第{img_info.page_number}页"
                 img_chunk = TextChunk(chunk_id=img_chunk_id, content=content, metadata=metadata)
                 image_chunks.append(img_chunk)
-                try:
-                    clip_entries.append(ClipEntry(img_chunk_id, clip_manager.embed_image(img_info.image_path)))
-                except Exception as e:
-                    print(f"警告：嵌入图片失败 {img_info.image_path}: {e}")
+                if clip_manager is not None:
+                    try:
+                        clip_entries.append(ClipEntry(img_chunk_id, clip_manager.embed_image(img_info.image_path)))
+                    except Exception as e:
+                        print(f"警告：嵌入图片失败 {img_info.image_path}: {e}")
 
         if limit is not None and len(text_chunks) >= limit:
             break
@@ -204,9 +229,10 @@ def build_pipeline(
     # Export combined chunks for manual review
     export_chunks_to_txt(text_chunks + image_chunks)
 
-    # Build CLIP index
-    global _clip_store  # noqa: PLW0603
-    _clip_store = build_clip_index(clip_entries, CLIP_INDEX_DIR)
+    # Build CLIP index（CLIP 关闭时跳过，保留磁盘上已有的索引不动）
+    if CLIP_ENABLED:
+        global _clip_store  # noqa: PLW0603
+        _clip_store = build_clip_index(clip_entries, CLIP_INDEX_DIR)
 
     total_count = len(text_chunks) + len(image_chunks)
     print(f"索引构建完成: {len(text_chunks)} 文本块, {len(image_chunks)} 图片")
@@ -296,12 +322,42 @@ def _build_preview(
     return preview[:max_length].rstrip() + "…"
 
 
+def _apply_rerank(query: str, results: List[QueryResult], top_k: int) -> List[QueryResult]:
+    """
+    对粗召回结果做 cross-encoder 精排，失败时降级为原顺序。
+
+    降级而非抛错的理由：重排是「锦上添花」的精度优化，粗召回结果本身已经可用。
+    为了排序质量把整个检索打挂，是错误的可用性权衡。
+    但降级必须打日志，否则线上重排静默失效、指标悄悄退化，没人会发现。
+    """
+    from reranker import RerankError, get_reranker
+
+    if len(results) <= 1:
+        return results[:top_k]
+
+    try:
+        ranking = get_reranker().rank(query, [r.content or r.preview for r in results])
+    except RerankError as exc:
+        print(f"[rerank] 重排失败，降级为向量召回顺序: {exc}")
+        return results[:top_k]
+
+    reordered: List[QueryResult] = []
+    for idx, relevance in ranking:
+        if 0 <= idx < len(results):
+            item = results[idx]
+            item.rerank_score = relevance
+            reordered.append(item)
+    return reordered[:top_k]
+
+
 def query_chunks(
     query: str,
     embedding_manager: EmbeddingManager,
     metadata_store: MetadataStore,
     vector_store,
     top_k: int = 3,
+    rerank: bool | None = None,
+    candidate_k: int | None = None,
 ) -> List[QueryResult]:
     from opencc import OpenCC
 
@@ -325,10 +381,16 @@ def query_chunks(
     keywords_trad = list({cc_s2t.convert(kw) for kw in keywords_raw})
     keywords_simp = list({cc_t2s.convert(kw) for kw in keywords_raw})
 
+    use_rerank = RERANK_ENABLED if rerank is None else rerank
+    # 开启重排时放宽粗召回数量：精排只能在候选集内部重新排序，
+    # 正确答案若没进候选集，重排再准也救不回来。
+    recall_k = (candidate_k or RERANK_CANDIDATES) if use_rerank else top_k
+    recall_k = max(recall_k, top_k)
+
     results = []
     seen_chunks = set()
     for q in combined_queries:
-        for doc, score in vector_store.similarity_search_with_score(q, k=top_k):
+        for doc, score in vector_store.similarity_search_with_score(q, k=recall_k):
             chunk_id = doc.metadata.get("chunk_id")
             if chunk_id and chunk_id in seen_chunks:
                 continue
@@ -336,7 +398,7 @@ def query_chunks(
             results.append((doc, score))
 
     results.sort(key=lambda item: item[1])
-    results = results[:top_k]
+    results = results[:recall_k]
     if not results:
         return []
 
@@ -367,7 +429,10 @@ def query_chunks(
                 asset_path=asset_path,
             )
         )
-    return final_results
+
+    if use_rerank:
+        return _apply_rerank(query, final_results, top_k)
+    return final_results[:top_k]
 
 
 def query_clip_images(
@@ -376,6 +441,8 @@ def query_clip_images(
     top_k: int = 3,
 ) -> List[QueryResult]:
     """只搜索图片，不搜索文本块"""
+    if not CLIP_ENABLED:
+        return []
     clip_store = get_clip_store()
     total = clip_store.index.ntotal
     if total == 0:

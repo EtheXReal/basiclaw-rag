@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Tuple
 
 import gradio as gr
 
-from config import DATA_DIR, LLM_ENABLED, OCR_ENABLED, PDF_PATH, UPLOAD_DIR
+from config import CLIP_ENABLED, DATA_DIR, LLM_ENABLED, OCR_ENABLED, PDF_PATH, UPLOAD_DIR
 from core.pipeline import (
     CLIP_INDEX_DIR,
     INDEX_DIR,
@@ -230,9 +230,19 @@ def _format_results(text_results: List[QueryResult], image_results: List[QueryRe
     if text_results:
         lines.append("#### 📄 文本匹配")
         for i, r in enumerate(text_results, 1):
-            # 文本检索用L2距离，分数越小越相似，转换为百分比
-            score_pct = max(0, min(100, (1 - r.score / 2) * 100))
-            lines.append(f"**{i}. [{r.source}] p.{r.page}** (相似度 {score_pct:.0f}%)")
+            # 分数语义随是否重排而改变，必须分开处理：
+            # - 召回阶段的 score 是 L2 距离，越小越相似
+            # - 重排后的 rerank_score 是相关性，越大越相关
+            # 两者方向相反，混用会让百分比完全颠倒。
+            #
+            # 重排分数是模型输出的未标定数值，不是概率，
+            # 硬换算成百分比是在编造精度——直接展示原值并标明是「相关度」。
+            if r.rerank_score is not None:
+                badge = f"相关度 {r.rerank_score:.3f}"
+            else:
+                score_pct = max(0, min(100, (1 - r.score / 2) * 100))
+                badge = f"向量相似度 {score_pct:.0f}%"
+            lines.append(f"**{i}. [{r.source}] p.{r.page}** ({badge})")
             preview = r.preview[:200] + "..." if len(r.preview) > 200 else r.preview
             lines.append(f"> {preview}\n")
 
@@ -358,7 +368,14 @@ with gr.Blocks(title="DocChat - RAG知识库检索系统") as demo:
                     scale=4
                 )
                 with gr.Column(scale=1):
-                    search_mode = gr.Radio(["文本检索", "图文检索"], value="图文检索", label="模式")
+                    # CLIP 关闭时（小内存部署）不展示图文检索，避免用户选了却永远返回空
+                    _modes = ["文本检索", "图文检索"] if CLIP_ENABLED else ["文本检索"]
+                    search_mode = gr.Radio(
+                        _modes,
+                        value=_modes[-1],
+                        label="模式",
+                        visible=CLIP_ENABLED,
+                    )
                     top_k = gr.Slider(1, 10, value=3, step=1, label="结果数")
 
             with gr.Row():

@@ -32,6 +32,7 @@ def run_eval(
     top_k: int = 5,
     label: str = "baseline",
     judge_misses: bool = True,
+    rerank: bool | None = None,
 ) -> EvalResult:
     embedding_manager = EmbeddingManager()
     metadata_store = create_metadata_store()
@@ -48,6 +49,7 @@ def run_eval(
             metadata_store=metadata_store,
             vector_store=vector_store,
             top_k=top_k,
+            rerank=rerank,
         )
         latency_ms = (time.perf_counter() - start) * 1000
 
@@ -154,13 +156,16 @@ def main() -> None:
     parser.add_argument("--label", type=str, default="baseline", help="本次配置的标签")
     parser.add_argument("--limit", type=int, default=None, help="只跑前 N 题（调试用）")
     parser.add_argument("--no-judge", action="store_true", help="跳过未命中甄别（省 API 调用）")
+    parser.add_argument("--rerank", dest="rerank", action="store_true", default=None, help="强制开启重排")
+    parser.add_argument("--no-rerank", dest="rerank", action="store_false", help="强制关闭重排（跑 baseline）")
     args = parser.parse_args()
 
     cases = load_testset()
     if args.limit:
         cases = cases[: args.limit]
     print(f"载入测试集 {len(cases)} 题\n")
-    run_eval(cases, top_k=args.top_k, label=args.label, judge_misses=not args.no_judge)
+    run_eval(cases, top_k=args.top_k, label=args.label,
+             judge_misses=not args.no_judge, rerank=args.rerank)
 
 
 if __name__ == "__main__":
