@@ -19,6 +19,7 @@ from config import (
     PDF_PATH,
     RERANK_CANDIDATES,
     RERANK_ENABLED,
+    RERANK_QUERY_TO_TRADITIONAL,
 )
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -335,8 +336,34 @@ def _apply_rerank(query: str, results: List[QueryResult], top_k: int) -> List[Qu
     if len(results) <= 1:
         return results[:top_k]
 
+    rerank_query = query
+    if RERANK_QUERY_TO_TRADITIONAL:
+        # 【默认关闭。保留开关是为了记录这次实验，不是为了启用它。】
+        #
+        # 起因：线上观察到某些查询的重排分数异常低（0.2 量级），而另一些高达 0.93。
+        # 假设是语料为繁体、用户输简体导致的字形不匹配。
+        #
+        # 假设验证成立——8 条样本的平均重排分：
+        #     简问+繁文 0.564 | 繁问+繁文 0.768 | 简问+简文 0.680
+        # 转成繁体确实让正确答案的分数提升约 36%。
+        #
+        # 但评测指标反而变差：Hit@1 0.764 -> 0.727，MRR 0.810 -> 0.791。
+        # 逐题分析 54 道有效题：仅 8 题排名变化（4 好 4 坏），46 题不变，
+        # Hit@1 的下降完全来自 2 道从第 1 位掉到第 2 位的题。
+        #
+        # 结论：效应在噪声范围内，55 题的测试集不足以检出。故不启用。
+        #
+        # 教训：**重排模型的绝对分数是未标定的，分数普遍抬高不等于排序变好。**
+        # 检索质量必须用排序指标衡量，不能看分数。
+        #
+        # 附带一点：这里用 s2t 是因为下游是语义模型，对字形变体（為/爲）不敏感；
+        # 若下游是 BM25 这类精确匹配，同样的转换会因选错繁体变体而漏检。
+        from opencc import OpenCC
+
+        rerank_query = OpenCC("s2t").convert(query)
+
     try:
-        ranking = get_reranker().rank(query, [r.content or r.preview for r in results])
+        ranking = get_reranker().rank(rerank_query, [r.content or r.preview for r in results])
     except RerankError as exc:
         print(f"[rerank] 重排失败，降级为向量召回顺序: {exc}")
         return results[:top_k]

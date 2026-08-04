@@ -103,6 +103,9 @@ RERANK_MODEL = os.getenv("RERANK_MODEL", "gte-rerank-v2")
 # 粗召回的候选数量。必须显著大于最终 top_k，否则精排没有腾挪空间——
 # 正确答案若没进候选集，重排再准也救不回来。
 RERANK_CANDIDATES = int(os.getenv("RERANK_CANDIDATES", "20"))
+# 重排前是否把查询转成繁体以与繁体语料字形对齐。
+# 默认关闭——实验证明无收益，详见 core.pipeline._apply_rerank 的注释。
+RERANK_QUERY_TO_TRADITIONAL = os.getenv("RERANK_QUERY_TO_TRADITIONAL", "false").lower() == "true"
 
 
 def require_api_key() -> str:
